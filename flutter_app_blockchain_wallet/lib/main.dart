@@ -113,3 +113,178 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 }
+
+// ignore: must_be_immutable
+class WebViewScreen extends StatelessWidget {
+  final String url;
+  final String ethWalletAddress =
+      "0x092d2177a829996baf2bba9748ecf1b51a5b954d"; // TODO: replace it with your wallet address
+  final String ethPrivateKey =
+      "4af...bb0"; // TODO: replace it with your private key (dangerous here)
+  Future<String> browserInitScript = rootBundle.loadString('assets/js/init.js');
+
+  WebViewScreen({super.key, required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("OpenSea Viewer"),
+      ),
+      body: FutureBuilder<String?>(
+        future: browserInitScript,
+        builder: (context, snapshot) {
+          if (snapshot.hasData) {
+            return InAppWebView(
+              initialUserScripts: UnmodifiableListView<UserScript>([
+                UserScript(
+                  source: snapshot.data ?? '',
+                  injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                ),
+              ]),
+              initialUrlRequest: URLRequest(url: Uri.parse(url)),
+              onWebViewCreated: (controller) async {
+                controller.clearCache(); // always logout first
+                controller.addJavaScriptHandler(
+                  handlerName: 'handleMessage',
+                  callback: (args) async {
+                    final json = jsonDecode(args[0]);
+                    // now json["data"] is the JSON-RPC request object
+                    debugPrint("[CW] $json");
+
+                    final rpcId = (json["data"]["id"] is int)
+                        ? json["data"]["id"]
+                        : int.parse(json["data"]["id"]);
+                    final method = json["data"]["method"];
+                    final params = json["data"]["params"] ?? [];
+
+                    handleMessage(method, params).then((result) {
+                      debugPrint("[CW][TTT] $result");
+                      controller.callAsyncJavaScript(
+                        functionBody:
+                            _getPostMessageFunctionBody(rpcId, result),
+                      );
+                    }).catchError((e) {
+                      controller.callAsyncJavaScript(
+                        functionBody:
+                            _getPostErrorMessageFunctionBody(rpcId, e),
+                      );
+                    });
+                  },
+                );
+              },
+              onConsoleMessage: (InAppWebViewController controller,
+                  ConsoleMessage consoleMessage) {
+                debugPrint("[CW][OOO] ${consoleMessage.message}");
+              },
+            );
+          } else {
+            return const Center(
+              child: CircularProgressIndicator(),
+            );
+          }
+        },
+      ),
+    );
+  }
+
+  List<int> hexToBytes(String hexString) {
+    hexString = hexString.replaceAll('0x', ''); // remove the '0x' prefix
+    List<int> bytes = [];
+    for (int i = 0; i < hexString.length; i += 2) {
+      bytes.add(int.parse(hexString.substring(i, i + 2), radix: 16));
+    }
+    return bytes;
+  }
+
+  Future<dynamic> handleMessage(
+    String method,
+    List<dynamic> params,
+  ) async {
+    debugPrint("[CW][case] XXX");
+    switch (method) {
+      case "personal_sign":
+        String hexMessage = params[0];
+        Uint8List messageBytes = Uint8List.fromList(hexToBytes(hexMessage));
+        String signature = EthSigUtil.signPersonalMessage(
+            privateKey: ethPrivateKey, message: messageBytes);
+        debugPrint('[CW] Signature: $signature');
+        return signature;
+
+      case "eth_getBalance":
+        return [ethWalletAddress];
+      case "eth_accounts":
+        return [ethWalletAddress];
+      case "eth_requestAccounts":
+        // ...
+//        if (userAccepted) {
+//          return [wallet.address];
+//        }
+        return [ethWalletAddress];
+//        throw JsonRpcError(
+//            code: 4001, message: "The request was rejected by the user");
+////       case "eth_signTransaction":
+////         // ...
+////         if (userAccepted) {
+////           return signTransaction(params);
+////         }
+////         throw JsonRpcError(
+////             code: 4001, message: "The request was rejected by the user");
+////       case "wallet_switchEthereumChain":
+////         // ...
+////         if (!chainSupported) {
+////           throw JsonRpcError(code: 4902, message: "Unrecognized chain ID.");
+////         }
+////         if (userAccepted) {
+////           return switchEthereumChain(params);
+////         }
+////         throw JsonRpcError(
+////             code: 4001, message: "The request was rejected by the user");
+////
+////       // add more cases here
+////       // e.g. eth_signTypedData_v4
+////       default:
+////         return postAlchemyRpc(method, params);
+    }
+  }
+
+  String _getPostMessageFunctionBody(int id, dynamic result) {
+    return '''
+        try {
+          window.postMessage({
+            "target":"metamask-inpage",
+            "data":{
+              "name":"metamask-provider",
+              "data":{
+                "jsonrpc":"2.0",
+                "id":$id,
+                "result":${jsonEncode(result)}
+              }
+            }
+          }, '*');
+        } catch (e) {
+          console.log('Error in evaluating javascript: ' + e);
+        }
+  ''';
+  }
+
+  String _getPostErrorMessageFunctionBody(int id, String error) {
+    return '''
+        try {
+          window.postMessage({
+            "target":"metamask-inpage",
+            "data":{
+              "name":"metamask-provider",
+              "data":{
+                "jsonrpc":"2.0",
+                "id":$id,
+                "error":$error
+              }
+            }
+          }, '*');
+        } catch (e) {
+          console.log('Error in evaluating javascript: ' + e);
+        }
+  ''';
+  }
+}
